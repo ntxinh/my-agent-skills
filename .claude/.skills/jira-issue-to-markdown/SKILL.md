@@ -107,7 +107,9 @@ Example: `ABC-1234-export-invoices-as-pdf.md`
 
 If there's no issue key (raw paste), use just the kebab-case title plus a short timestamp.
 
-Save into `/mnt/user-data/outputs/` and present the file to the user with `present_files`.
+**Default save location:** `<project-root>/docs/jira/` (i.e. the `docs/jira/` directory at the root of the current project/repo). Create the directory if it doesn't exist. Only deviate from this location if the user explicitly specifies a different path.
+
+After saving, report the absolute path of the file to the user.
 
 ---
 
