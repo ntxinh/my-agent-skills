@@ -101,11 +101,13 @@ This visual distinction matters: a Tech Lead/QA reviewing the spec needs to see 
 
 ### 6. Save the markdown file
 
-Filename convention: `{ISSUE-KEY}-{kebab-case-title}.md`
+Filename convention: `{YYYY-MM-DD}-{ISSUE-KEY}-{kebab-case-title}.md`
 
-Example: `ABC-1234-export-invoices-as-pdf.md`
+The `YYYY-MM-DD` prefix is today's date (the date the spec is generated), not the Jira issue's created date. Use the user's current local date.
 
-If there's no issue key (raw paste), use just the kebab-case title plus a short timestamp.
+Example: `2026-04-28-ABC-1234-export-invoices-as-pdf.md`
+
+If there's no issue key (raw paste), use `{YYYY-MM-DD}-{kebab-case-title}.md` (e.g., `2026-04-28-export-invoices-as-pdf.md`).
 
 **Default save location:** `<project-root>/docs/jira/` (i.e. the `docs/jira/` directory at the root of the current project/repo). Create the directory if it doesn't exist. Only deviate from this location if the user explicitly specifies a different path.
 
@@ -131,7 +133,7 @@ After saving, report the absolute path of the file to the user.
 >
 > **Attachment:** `customer-screenshot.png` — shows an iPhone Safari screen with the company header and footer visible but a large blank white area in the middle where the invoice list should be.
 
-**Output — `ABC-456-customers-cant-see-invoices-on-mobile.md`:**
+**Output — `2026-04-28-ABC-456-customers-cant-see-invoices-on-mobile.md`:**
 
 ```markdown
 # ABC-456 — Customers can't see their invoices on mobile
