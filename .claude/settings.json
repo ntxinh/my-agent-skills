@@ -1,0 +1,16 @@
+{
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "permissions": {
+    "deny": [
+      "Read(appsettings.*.json)",
+      "Read(.env*)",
+      "Bash(rm -rf /)"
+    ]
+  },
+  "env": {
+    "NODE_ENV": "development"
+  }
+}
