@@ -7,7 +7,10 @@ description: Translate a Jira issue (Bug, Story, Task, or Spike) into a develope
 
 This skill converts a Jira issue — typically written by a non-technical client in plain business language — into a structured markdown spec a developer can act on. It fills in the BA-style sections clients usually omit (acceptance criteria, edge cases, definition of done, security/performance, dependencies) using SaaS-aware defaults, and it extracts any requirement text embedded in attached images.
 
-The key principle: **never silently invent client intent**. Anything inferred is clearly marked so the BA, PM, Tech Lead, or QA can verify it before the team commits to building.
+The key principles:
+
+1. **Never silently invent client intent.** Anything inferred is clearly marked so the BA, PM, Tech Lead, or QA can verify it before the team commits to building.
+2. **Ask follow-up questions whenever something is unclear.** If the ticket is ambiguous, contradictory, missing critical context, or you can't confidently choose between reasonable interpretations, stop and ask the user before generating the spec. It's better to surface a short list of clarifying questions up front than to fill the markdown with guesses or `_To be clarified_` placeholders the user has to chase down later.
 
 ---
 
@@ -65,7 +68,21 @@ The primary button reads "Export" (blue, right-aligned). The secondary button re
 
 Don't just dump OCR — describe the structure, because layout often *is* the requirement. Note when text in the image conflicts with the issue description and surface that conflict.
 
-### 4. Fill the template
+### 4. Ask clarifying questions before filling
+
+Before you start filling the template, scan the ticket (description + images + comments) and identify anything that's unclear, ambiguous, or contradictory from your end. Common things worth asking about:
+
+- **Scope ambiguity** — "should this apply to all user roles, or only admins?"
+- **Conflicting signals** — the description says one thing but the screenshot shows another.
+- **Missing critical context** — no environment info on a bug, no acceptance criteria on a feature where the behavior could go several reasonable ways, no indication of which sub-app/module is affected.
+- **Choice between reasonable interpretations** — if you'd otherwise have to guess and mark as inferred, ask first.
+- **Unknown but answerable facts** — browser version, tenant, affected user accounts, exact reproduction steps.
+
+Ask the user as a short numbered list of focused questions. Don't ask about things you can sensibly infer with a SaaS lens (those go through the inference path with `_(inferred)_` markers) — only ask when the answer would meaningfully change the spec.
+
+If the user says "just do your best" or skips some questions, proceed with inference and mark generously. Don't block on every minor unknown.
+
+### 5. Fill the template
 
 Walk the template top to bottom. For each section:
 
@@ -73,7 +90,7 @@ Walk the template top to bottom. For each section:
 - **If the client didn't state it** → consult `references/saas-inference-guide.md` for SaaS defaults relevant to that section, draft a sensible starting point, and **mark it as inferred** (see next step).
 - **If you can't reasonably infer it** → leave the section with a placeholder like `_To be clarified with reporter._` rather than fabricating content.
 
-### 5. Mark inferred content honestly
+### 6. Mark inferred content honestly
 
 Two conventions, used together:
 
@@ -99,7 +116,7 @@ Two conventions, used together:
 
 This visual distinction matters: a Tech Lead/QA reviewing the spec needs to see at a glance which items are real requirements vs. your suggestions. Don't be shy about marking — over-marking is safer than under-marking.
 
-### 6. Save the markdown file
+### 7. Save the markdown file
 
 Filename convention: `{YYYY-MM-DD}-{ISSUE-KEY}-{kebab-case-title}.md`
 
