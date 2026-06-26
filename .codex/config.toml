@@ -1,0 +1,5 @@
+notify = ["python3", "$HOME/.codex/notify.py"]
+
+[tui]
+status_line = ["model-with-reasoning", "model", "project-name", "git-branch", "context-used", "five-hour-limit", "weekly-limit", "context-window-size", "used-tokens", "total-input-tokens", "total-output-tokens"]
+status_line_use_colors = true
