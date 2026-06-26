@@ -101,7 +101,28 @@
     "deny": [
       "Read(appsettings.*.json)",
       "Read(.env*)",
-      "Bash(rm -rf /)"
+      "Bash(rm -rf /)",
+      "Read(**/.env*)",
+      "Read(**/.dev.vars*)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Read(**/secrets/**)",
+      "Read(**/credentials/**)",
+      "Read(**/.aws/**)",
+      "Read(**/.ssh/**)",
+      "Read(**/config/database.yml)",
+      "Read(**/config/credentials.json)",
+      "Read(**/.npmrc)",
+      "Read(**/.pypirc)",
+      "Write(**/.env*)",
+      "Write(**/secrets/**)",
+      "Write(**/.ssh/**)",
+      "Bash(rm -rf *)",
+      "Bash(sudo *)",
+      "Bash(npm publish *)",
+      "Bash(curl * | sh)",
+      "Bash(wget *)",
+      "Bash(chmod *)"
     ]
   },
   "env": {

@@ -3,6 +3,58 @@
     "atlassian": {
       "url": "https://mcp.atlassian.com/v1/mcp",
       "type": "http"
+    },
+    "mermaid-mcp": {
+      "url": "https://mcp.mermaid.ai/mcp",
+      "type": "http"
+    },
+    "excalidraw": {
+      "url": "https://mcp.excalidraw.com",
+      "type": "http"
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ]
+    },
+    "memory": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ]
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "."
+      ]
+    },
+    "context7": {
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp",
+      "headers": {
+        "CONTEXT7_API_KEY": "PLACEHOLDER_API_KEY"
+      }
+    },
+    "chrome-devtools": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@latest"
+      ]
+    },
+    "codegraph": {
+      "type": "stdio",
+      "command": "codegraph",
+      "args": [
+        "serve",
+        "--mcp"
+      ]
     }
   }
 }
