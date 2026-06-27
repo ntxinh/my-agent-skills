@@ -1,5 +1,36 @@
 notify = ["python3", "$HOME/.codex/notify.py"]
 
+# Enable granular approval policies to enforce external .rules files
+[approval_policy.granular]
+rules = true
+
+# Global environment variables for agent execution
+[env]
+NODE_ENV = "development"
+
+# Set our custom sandbox profile as the default
+default_permissions = "restricted-workspace"
+
+# Define the custom permission profile
+[permissions.restricted-workspace]
+extends = ":workspace"
+
+# Filesystem rules: "deny" restricts both read and write operations
+[permissions.restricted-workspace.filesystem]
+"**/appsettings.*.json" = "deny"
+"**/.env*" = "deny"
+"**/.dev.vars*" = "deny"
+"**/*.pem" = "deny"
+"**/*.key" = "deny"
+"**/secrets/**" = "deny"
+"**/credentials/**" = "deny"
+"**/.aws/**" = "deny"
+"**/.ssh/**" = "deny"
+"**/config/database.yml" = "deny"
+"**/config/credentials.json" = "deny"
+"**/.npmrc" = "deny"
+"**/.pypirc" = "deny"
+
 [tui]
 status_line = ["model-with-reasoning", "model", "project-name", "git-branch", "context-used", "five-hour-limit", "weekly-limit", "context-window-size", "used-tokens", "total-input-tokens", "total-output-tokens"]
 status_line_use_colors = true
