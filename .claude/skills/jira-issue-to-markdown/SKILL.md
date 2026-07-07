@@ -42,15 +42,32 @@ If the type is unclear, ask the user — don't guess. The wrong template misses 
 
 Read the template file before filling it in. Don't reproduce it from memory; copy from the file so the structure stays exact.
 
-### 3. Extract content from images
+### 3. Extract content from images (ALWAYS do this — do not skip)
 
-Jira clients commonly paste screenshots that contain real requirements (mockups with annotations, error messages, lists of fields). These must end up in the markdown.
+Jira clients commonly paste screenshots that contain real requirements (mockups with annotations, error messages, lists of fields). Always read them. These must end up in the markdown.
 
 For each image attached to the issue or pasted by the user:
 
-1. Get the image into your context — either via the Atlassian MCP attachment URL, or by asking the user to upload it if the MCP can't fetch protected attachments.
-2. Use vision to read every piece of text and describe what's depicted (UI element, flow diagram, error dialog, table, etc.).
-3. Place the extracted content under a clearly labeled section in the markdown:
+1. Get the image into your context — either via the Atlassian MCP attachment URL, `acli jira`, or by asking the user to upload it if the MCP can't fetch protected attachments.
+2. If the attachment is protected and the MCP provides a `fields.attachment[i].content` URL, download it with Basic Auth using `~/.agents/jira-credentials.json`:
+
+   ```bash
+   JIRA_EMAIL=$(jq -r .email ~/.agents/jira-credentials.json)
+   JIRA_TOKEN=$(jq -r .api_token ~/.agents/jira-credentials.json)
+   mkdir -p "docs/jira/<ISSUE-KEY>"
+   curl -s -L -u "$JIRA_EMAIL:$JIRA_TOKEN" \
+     "<content_url>" -o "docs/jira/<ISSUE-KEY>/<ISSUE-KEY>-<filename>"
+   ```
+
+   Save downloaded images persistently beside the generated Jira docs (not `/tmp`) with the issue key as a filename prefix, so future tools can inspect them visually. If the user specified a different markdown output folder, save images in that same folder instead.
+3. Use vision to read every piece of text and describe what's depicted (UI element, flow diagram, error dialog, table, etc.).
+4. Reference downloaded images in the markdown with relative paths when available:
+
+   ```markdown
+   ![<filename>](./<ISSUE-KEY>/<ISSUE-KEY>-<filename>)
+   ```
+
+5. Place the extracted content under a clearly labeled section in the markdown:
 
 ```markdown
 ## Content extracted from attached images
@@ -67,6 +84,8 @@ The primary button reads "Export" (blue, right-aligned). The secondary button re
 ```
 
 Don't just dump OCR — describe the structure, because layout often *is* the requirement. Note when text in the image conflicts with the issue description and surface that conflict.
+
+If an image can't be downloaded, note `[Image N — could not download: <filename>]` in the markdown and describe any surrounding context clues from the issue description or ADF nodes.
 
 ### 4. Ask clarifying questions before filling
 
