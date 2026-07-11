@@ -55,7 +55,12 @@
     "csharp-lsp@claude-plugins-official": true,
     "telegram@claude-plugins-official": true,
     "dotnet@dotnet-agent-skills": true,
-    "claude-code-setup@claude-plugins-official": true
+    "claude-code-setup@claude-plugins-official": true,
+    "dotnet@dotnet-agent-skills": true,
+    "dotnet-data@dotnet-agent-skills": true,
+    "dotnet-diag@dotnet-agent-skills": true,
+    "dotnet-upgrade@dotnet-agent-skills": true,
+    "acs@gms-marketplace": true
   },
   "extraKnownMarketplaces": {
     "superpowers-marketplace": {
@@ -89,6 +94,12 @@
       "source": {
         "source": "github",
         "repo": "anthropics/claude-plugins-official"
+      }
+    },
+    "gms-marketplace": {
+      "source": {
+        "source": "github",
+        "repo": "globalmindsolution/gms-marketplace"
       }
     }
   },
@@ -127,5 +138,7 @@
   },
   "env": {
     "NODE_ENV": "development"
-  }
+  },
+  "tui": "fullscreen",
+  "theme": "dark"
 }
