@@ -34,3 +34,6 @@ extends = ":workspace"
 [tui]
 status_line = ["model-with-reasoning", "model", "project-name", "git-branch", "context-used", "five-hour-limit", "weekly-limit", "context-window-size", "used-tokens", "total-input-tokens", "total-output-tokens"]
 status_line_use_colors = true
+
+[mcp_servers.atlassian]
+url = "https://mcp.atlassian.com/v1/mcp"
