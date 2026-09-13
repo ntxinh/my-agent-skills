@@ -13,132 +13,74 @@ Only ever use: `list`, `show`, `list-metrics`, `az cosmosdb sql container show/l
 
 **Never** run: `create`, `update`, `delete`, `az cosmosdb sql container throughput update`, `az cosmosdb sql container merge`, `az cosmosdb create/restore`, any document `upsert`/`replace`/`delete`/`patch`, or migrate/failover operations. If a fix requires changing RU/s, partition key, or indexing policy, propose it — don't execute it.
 
-## Setup
+## Configuration
 
-Add these to `~/.agents/.env` if not already present (ask the user to fill in real values — don't guess):
+Connection settings live in a small JSON config, resolved per environment — not in a `.env` file.
 
-```ini
-AZURE_COSMOS_ACCOUNT=
-AZURE_COSMOS_DATABASE=
-AZURE_COSMOS_CONTAINER=
-```
+### Step 1 — determine the environment
 
-```bash
-set -a; source ~/.agents/.env; set +a
-az account set --subscription "$SUBSCRIPTION"
+Exactly two environments are supported: `qa` and `production`. Querying the wrong one can produce misleading results, so:
 
-COSMOS_ID=$(az cosmosdb show -g "$RESOURCE_GROUP" -n "$AZURE_COSMOS_ACCOUNT" --query id -o tsv)
-```
+- If the user's instruction names the environment (`qa`, `production`, or an obvious equivalent like "prod"), use that.
+- If it's unspecified or ambiguous, **ask the user which environment before running anything.** Do not guess.
 
-## 1. Account & container config — "what are we actually provisioned for"
+### Step 2 — resolve config for that environment
 
 ```bash
-# Account-level: consistency level, regions, capabilities (e.g. serverless vs provisioned)
-az cosmosdb show -g "$RESOURCE_GROUP" -n "$AZURE_COSMOS_ACCOUNT" \
-  --query "{consistency:consistencyPolicy.defaultConsistencyLevel, locations:locations[].locationName, capabilities:capabilities}" -o json
-
-# Database + container list
-az cosmosdb sql database list -g "$RESOURCE_GROUP" -a "$AZURE_COSMOS_ACCOUNT" -o table
-az cosmosdb sql container list -g "$RESOURCE_GROUP" -a "$AZURE_COSMOS_ACCOUNT" -d "$AZURE_COSMOS_DATABASE" -o table
-
-# Container detail: partition key path, indexing policy, unique keys, TTL
-az cosmosdb sql container show -g "$RESOURCE_GROUP" -a "$AZURE_COSMOS_ACCOUNT" \
-  -d "$AZURE_COSMOS_DATABASE" -n "$AZURE_COSMOS_CONTAINER" \
-  --query "{partitionKey:resource.partitionKey, indexing:resource.indexingPolicy, ttl:resource.defaultTtl}" -o json
-
-# Provisioned throughput (RU/s) at database or container level — check whichever is set
-az cosmosdb sql database throughput show -g "$RESOURCE_GROUP" -a "$AZURE_COSMOS_ACCOUNT" -n "$AZURE_COSMOS_DATABASE" -o json
-az cosmosdb sql container throughput show -g "$RESOURCE_GROUP" -a "$AZURE_COSMOS_ACCOUNT" \
-  -d "$AZURE_COSMOS_DATABASE" -n "$AZURE_COSMOS_CONTAINER" -o json
+scripts/resolve_config.sh --env qa        # or: --env production
 ```
 
-A mismatch between actual traffic and provisioned RU/s (fixed, not autoscale, and set too low) is the single most common Cosmos incident — check this before anything fancier.
+The script checks, in order:
+1. **Project override** — walks up from the current directory to the nearest git root, then reads `<repo-root>/.claude/azure-cosmos-db.json`.
+2. **Personal/global default** — `~/.claude/azure-cosmos-db.json`.
+3. If neither file defines the requested environment, it exits non-zero (exit code `1`). **Fall through to the discovery flow below — never fabricate values.**
 
-## 2. Throttling (429s) and RU consumption — via Metrics
+On success, it prints one JSON object with the resolved fields on stdout (exit `0`), after validating that all required fields are present.
+
+### Step 3 — discovery flow (only if resolution fails)
+
+1. Run `az cosmosdb list` (and `az group list` if the resource group is also unknown) to find likely candidate Cosmos accounts for the requested environment. If a database/container also needs to be discovered, use `az cosmosdb sql database list` / `az cosmosdb sql container list` (see step 1 of `references/investigation-playbook.md`) once the account is known.
+2. Confirm the match with the user, or let them pick from a short list if there's more than one candidate.
+3. Ask whether to save the resolved values to the **project-level** config (`<repo-root>/.claude/azure-cosmos-db.json`) for next time.
+4. **Never write the config file without the user's explicit confirmation.**
+
+### Config fields
+
+| Field | Required | Description |
+|---|---|---|
+| `subscriptionId` | Yes | Azure subscription ID or name containing the account, used for `az account set --subscription` |
+| `resourceGroup` | Yes | Resource group containing the Cosmos DB account |
+| `accountName` | Yes | The Cosmos DB account name, used with `az cosmosdb show -n` and as the `-a` value for `az cosmosdb sql ...` commands |
+| `databaseName` | No | The SQL API database name. Only needed for database/container-scoped steps (config, throughput, queries) — account-level checks (RU metrics, hot partitions, diagnostics, activity log) don't need it |
+| `containerName` | No | The container within `databaseName`. Same scope note as above |
+
+`databaseName`/`containerName` are optional because a lot of Cosmos triage (throttling metrics, activity log, diagnostic settings, account health) is account-level. When a specific step needs one and it isn't in the resolved config, ask the user or discover it via `az cosmosdb sql database/container list` rather than guessing.
+
+See `assets/config.example.json` for a filled-in example covering both environments.
+
+### Using the resolved config
 
 ```bash
-az monitor metrics list --resource "$COSMOS_ID" \
-  --metric "TotalRequestUnits" "NormalizedRUConsumption" "TotalRequests" \
-  --interval PT5M --start-time "$(date -u -d '3 hours ago' +%Y-%m-%dT%H:%MZ)" \
-  -o table
+CONFIG=$(scripts/resolve_config.sh --env qa) || {
+  # resolution failed — run the discovery flow instead of guessing
+  exit 1
+}
 
-# Break down 429s specifically by status code dimension
-az monitor metrics list --resource "$COSMOS_ID" \
-  --metric "TotalRequests" --dimension "StatusCode" \
-  --interval PT5M --start-time "$(date -u -d '3 hours ago' +%Y-%m-%dT%H:%MZ)" \
-  -o table
+SUBSCRIPTION_ID=$(jq -r '.subscriptionId' <<<"$CONFIG")
+RESOURCE_GROUP=$(jq -r '.resourceGroup'   <<<"$CONFIG")
+ACCOUNT_NAME=$(jq -r '.accountName'       <<<"$CONFIG")
+DATABASE_NAME=$(jq -r '.databaseName // empty' <<<"$CONFIG")
+CONTAINER_NAME=$(jq -r '.containerName // empty' <<<"$CONFIG")
+
+az account set --subscription "$SUBSCRIPTION_ID"
+COSMOS_ID=$(az cosmosdb show -g "$RESOURCE_GROUP" -n "$ACCOUNT_NAME" --query id -o tsv)
 ```
 
-`NormalizedRUConsumption` near/at 100% for a sustained period = the container was throttled; correlate the timestamps with the app-side symptom (slow requests, retried calls in App Insights dependency data — hand off to `app-insights-kql`).
+With `$COSMOS_ID`, `$RESOURCE_GROUP`, `$ACCOUNT_NAME`, and (if present) `$DATABASE_NAME`/`$CONTAINER_NAME` set, proceed to the investigation commands.
 
-## 3. Hot partitions — "is load skewed to one partition key value"
+## Investigation playbook
 
-```bash
-# Per-partition-key-range RU consumption (needs PartitionKeyRangeId dimension)
-az monitor metrics list --resource "$COSMOS_ID" \
-  --metric "NormalizedRUConsumption" --dimension "CollectionName" "PartitionKeyRangeId" \
-  --interval PT15M --start-time "$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%MZ)" \
-  -o table
-```
-
-If one partition key range is consistently maxed while others are idle, the container's partition key choice (or a specific tenant/customer with disproportionate traffic under that key) is the root cause — this is a design issue, not something fixable by raising RU/s alone.
-
-## 4. Slow / expensive queries
-
-Cosmos returns RU cost per query in the response headers (`x-ms-request-charge`). When debugging from application code or via a read-only query tool:
-
-```sql
--- Run directly (read-only) to inspect a suspect query's shape/cost
-SELECT * FROM c WHERE c.partitionKeyField = @value AND c.someField = @other
-```
-
-- A high RU charge on a query usually means it's a **cross-partition query** (missing or wrong partition key in the filter) or missing an index for the filtered/sorted field.
-- Check the container's indexing policy (pulled in step 1) — confirm the field being filtered/sorted on is actually included and not excluded.
-- `ORDER BY` on a non-indexed (or composite-index-missing) field forces an expensive in-memory sort — a frequent silent cost driver.
-
-## 5. Diagnostic logs (if routed to Log Analytics)
-
-Cosmos can send `DataPlaneRequests`, `QueryRuntimeStatistics`, `PartitionKeyStatistics`, and `PartitionKeyRUConsumption` logs to the shared Log Analytics workspace — check first whether this is configured:
-
-```bash
-az monitor diagnostic-settings list --resource "$COSMOS_ID" -o table
-```
-
-If configured, hand off to `log-analytics-workspace` with these starting queries (adjust table names to what's actually enabled):
-
-```kusto
-CDBDataPlaneRequests
-| where TimeGenerated > ago(1h)
-| where StatusCode == 429
-| summarize count() by CollectionName, bin(TimeGenerated, 5m)
-
-CDBQueryRuntimeStatistics
-| where TimeGenerated > ago(1h)
-| where requestCharge > 50
-| project TimeGenerated, querytext_s, requestCharge, CollectionName
-| order by requestCharge desc
-```
-
-If no diagnostic setting exists, say so explicitly — this is often the reason "there's nothing in Log Analytics" isn't a query bug but a missing routing config (a fix to propose, not apply).
-
-## 6. Account health / activity
-
-```bash
-# Control-plane changes (throughput changes, failovers, region additions)
-az monitor activity-log list -g "$RESOURCE_GROUP" --resource-id "$COSMOS_ID" \
-  --start-time "$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%MZ)" -o table
-
-# Availability metric
-az monitor metrics list --resource "$COSMOS_ID" --metric "ServiceAvailability" \
-  --interval PT1H --start-time "$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%MZ)" -o table
-```
-
-## Suggested triage workflow
-
-1. **Symptom is 429s / "throttled" errors** → step 2 (RU metrics) → step 3 (hot partition check) → step 1 (confirm actual provisioned RU/s vs. traffic).
-2. **Symptom is a slow specific operation** → get the query from `app-insights-kql`/`chrome-devtools-frontend` first → step 4 (inspect its shape and RU cost) → check indexing policy.
-3. **"Nothing shows up in our logs for Cosmos"** → step 5, check diagnostic settings are actually configured before assuming a query problem.
-4. **Intermittent regional issue** → step 6, cross-reference with `azure-monitor`'s resource-health check for the account.
+The full command set — account/container config, RU consumption & throttling metrics, hot-partition checks, slow-query inspection, diagnostic logs, and account health — plus the suggested triage workflow (which step to start with for a given symptom) live in `references/investigation-playbook.md`. Load that file once the environment and config are resolved.
 
 ## Output hygiene
 

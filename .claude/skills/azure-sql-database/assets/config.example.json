@@ -1,0 +1,16 @@
+{
+  "qa": {
+    "subscriptionId": "00000000-0000-0000-0000-000000000000",
+    "resourceGroup": "rg-myapp-qa",
+    "sqlServerName": "sql-myapp-qa",
+    "sqlDatabaseName": "myapp-db-qa",
+    "sqlUsername": "myapp_readonly"
+  },
+  "production": {
+    "subscriptionId": "00000000-0000-0000-0000-000000000000",
+    "resourceGroup": "rg-myapp-prod",
+    "sqlServerName": "sql-myapp-prod",
+    "sqlDatabaseName": "myapp-db-prod",
+    "sqlUsername": "myapp_readonly"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "qa": {
+    "subscriptionId": "00000000-0000-0000-0000-000000000000",
+    "resourceGroup": "rg-myapp-qa",
+    "logAnalyticsWorkspaceName": "law-myapp-qa",
+    "appServiceBackendName": "app-myapp-backend-qa",
+    "appServiceFrontendName": "app-myapp-frontend-qa"
+  },
+  "production": {
+    "subscriptionId": "00000000-0000-0000-0000-000000000000",
+    "resourceGroup": "rg-myapp-prod",
+    "logAnalyticsWorkspaceName": "law-myapp-prod",
+    "appServiceBackendName": "app-myapp-backend-prod",
+    "appServiceFrontendName": "app-myapp-frontend-prod"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "qa": {
+    "subscriptionId": "00000000-0000-0000-0000-000000000000",
+    "resourceGroup": "rg-myapp-qa",
+    "cacheName": "myapp-qa-cache",
+    "hostName": "myapp-qa-cache.redis.cache.windows.net",
+    "port": 6380
+  },
+  "production": {
+    "subscriptionId": "11111111-1111-1111-1111-111111111111",
+    "resourceGroup": "rg-myapp-prod",
+    "cacheName": "myapp-prod-cache",
+    "hostName": "myapp-prod-cache.redis.cache.windows.net",
+    "port": 6380
+  }
+}

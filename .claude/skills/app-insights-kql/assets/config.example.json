@@ -1,0 +1,14 @@
+{
+  "qa": {
+    "appInsightsName": "my-project-qa-appinsights",
+    "resourceGroup": "rg-my-project-qa",
+    "subscriptionId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "backendRoleName": "my-project-backend-qa"
+  },
+  "production": {
+    "appInsightsName": "my-project-prod-appinsights",
+    "resourceGroup": "rg-my-project-prod",
+    "subscriptionId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "backendRoleName": "my-project-backend-prod"
+  }
+}

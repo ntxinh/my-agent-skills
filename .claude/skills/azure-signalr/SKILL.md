@@ -13,107 +13,70 @@ Only ever use: `list`, `show`, `list-keys` (reading, not rotating), metrics/log 
 
 **Never** run: `az signalr create/update/delete`, `az signalr key renew`, `az signalr restart`, `az signalr scale`, `az signalr cors update`, `az signalr upstream update`, or `az signalr network-rule update`. If a fix requires scaling units, changing CORS, or updating upstream URLs (serverless mode), propose it — don't execute it.
 
-## Setup
+## Configuration
 
-Add this to `~/.agents/.env` if not already present:
+Connection settings live in a small JSON config, resolved per environment — not in a `.env` file.
 
-```ini
-AZURE_SIGNALR_SERVICE=
-```
+### Step 1 — determine the environment
 
-```bash
-set -a; source ~/.agents/.env; set +a
-az account set --subscription "$SUBSCRIPTION"
+Exactly two environments are supported: `qa` and `production`. Querying the wrong one can produce misleading results, so:
 
-SIGNALR_ID=$(az signalr show -g "$RESOURCE_GROUP" -n "$AZURE_SIGNALR_SERVICE" --query id -o tsv)
-```
+- If the user's instruction names the environment (`qa`, `production`, or an obvious equivalent like "prod"), use that.
+- If it's unspecified or ambiguous, **ask the user which environment before running anything.** Do not guess.
 
-## 1. Service config — "what mode/scale are we actually running"
+### Step 2 — resolve config for that environment
 
 ```bash
-az signalr show -g "$RESOURCE_GROUP" -n "$AZURE_SIGNALR_SERVICE" \
-  --query "{sku:sku.name, unitCount:sku.capacity, serviceMode:features[?properties.ServiceMode].properties.ServiceMode | [0], hostName:hostName, state:provisioningState}" -o json
-
-# CORS allowed origins — mismatch here explains a lot of "connection refused" from the Angular app
-az signalr cors show -g "$RESOURCE_GROUP" -n "$AZURE_SIGNALR_SERVICE" -o json
-
-# Upstream settings — only relevant in Serverless mode (Functions-based hubs)
-az signalr upstream show -g "$RESOURCE_GROUP" -n "$AZURE_SIGNALR_SERVICE" -o json
+scripts/resolve_config.sh --env qa        # or: --env production
 ```
 
-Service mode matters a lot for where to look next: **Default** mode means the ASP.NET Core app itself hosts hub logic (check `app-insights-kql` for hub exceptions); **Serverless** means an upstream (often Azure Functions) handles events — a failure there won't show up in the App Service's own logs at all.
+The script checks, in order:
+1. **Project override** — walks up from the current directory to the nearest git root, then reads `<repo-root>/.claude/azure-signalr.json`.
+2. **Personal/global default** — `~/.claude/azure-signalr.json`.
+3. If neither file defines the requested environment, it exits non-zero (exit code `1`). **Fall through to the discovery flow below — never fabricate values.**
 
-## 2. Connection counts & limits — via Metrics
+On success, it prints one JSON object with the resolved fields on stdout (exit `0`), after validating that all required fields are present.
+
+### Step 3 — discovery flow (only if resolution fails)
+
+1. Run `az signalr list` (and `az group list` if the resource group is also unknown) to find likely candidate SignalR services for the requested environment.
+2. Confirm the match with the user, or let them pick from a short list if there's more than one candidate.
+3. Ask whether to save the resolved values to the **project-level** config (`<repo-root>/.claude/azure-signalr.json`) for next time.
+4. **Never write the config file without the user's explicit confirmation.**
+
+### Config fields
+
+| Field | Required | Description |
+|---|---|---|
+| `subscriptionId` | Yes | Azure subscription ID or name containing the service, used for `az account set --subscription` |
+| `resourceGroup` | Yes | Resource group containing the SignalR service |
+| `serviceName` | Yes | The SignalR service name, used with `az signalr show/cors/upstream -n` |
+
+All three fields are required — every step in this skill (config, CORS, upstream, metrics, health check, activity log) needs the resolved account context, so there's no meaningful "optional" field here.
+
+See `assets/config.example.json` for a filled-in example covering both environments.
+
+### Using the resolved config
 
 ```bash
-az monitor metrics list --resource "$SIGNALR_ID" \
-  --metric "ConnectionCount" "ConnectionOpenCount" "ConnectionCloseCount" "ConnectionQuotaUtilization" \
-  --interval PT5M --start-time "$(date -u -d '3 hours ago' +%Y-%m-%dT%H:%MZ)" \
-  -o table
+CONFIG=$(scripts/resolve_config.sh --env qa) || {
+  # resolution failed — run the discovery flow instead of guessing
+  exit 1
+}
+
+SUBSCRIPTION_ID=$(jq -r '.subscriptionId' <<<"$CONFIG")
+RESOURCE_GROUP=$(jq -r '.resourceGroup'   <<<"$CONFIG")
+SERVICE_NAME=$(jq -r '.serviceName'       <<<"$CONFIG")
+
+az account set --subscription "$SUBSCRIPTION_ID"
+SIGNALR_ID=$(az signalr show -g "$RESOURCE_GROUP" -n "$SERVICE_NAME" --query id -o tsv)
 ```
 
-`ConnectionQuotaUtilization` near 100% means the provisioned unit count's connection limit is hit — new clients get rejected, which surfaces to users as "real-time updates stopped working" with no obvious backend error. Check this before looking anywhere else if the report is "some users affected, others fine."
+With `$SIGNALR_ID`, `$RESOURCE_GROUP`, and `$SERVICE_NAME` set, proceed to the investigation commands.
 
-## 3. Message throughput & throttling
+## Investigation playbook
 
-```bash
-az monitor metrics list --resource "$SIGNALR_ID" \
-  --metric "MessageCount" "InboundTraffic" "OutboundTraffic" "ServerLoad" \
-  --interval PT5M --start-time "$(date -u -d '3 hours ago' +%Y-%m-%dT%H:%MZ)" \
-  -o table
-```
-
-SignalR Service enforces a per-unit message quota; if `MessageCount` is spiking (e.g. a hub method broadcasting too frequently or to too large a group) alongside client-visible delays, this is the first place it shows.
-
-## 4. Connection close reasons — via diagnostic/connectivity logs
-
-```bash
-az monitor diagnostic-settings list --resource "$SIGNALR_ID" -o table
-```
-
-If routed to the shared Log Analytics workspace, hand off to `log-analytics-workspace` with starting queries against the SignalR resource-specific tables (category names typically `ConnectivityLogs`, `MessagingLogs`, `HttpRequestLogs`):
-
-```kusto
-AzureDiagnostics
-| where ResourceProvider == "MICROSOFT.SIGNALRSERVICE"
-| where Category == "ConnectivityLogs"
-| where TimeGenerated > ago(1h)
-| project TimeGenerated, connectionId_s, userId_s, message_s
-| order by TimeGenerated desc
-
-AzureDiagnostics
-| where ResourceProvider == "MICROSOFT.SIGNALRSERVICE"
-| where Category == "HttpRequestLogs"
-| where TimeGenerated > ago(1h)
-| where statusCode_d >= 400
-| project TimeGenerated, requestUri_s, statusCode_d, message_s
-```
-
-Connectivity logs give the actual disconnect reason (client-initiated, timeout, transport error, server shutdown/scale event) — this is usually more informative than App Insights, which only sees the ASP.NET Core side of the negotiate handshake.
-
-## 5. Health check
-
-```bash
-curl -s -o /dev/null -w "%{http_code}\n" "https://$(az signalr show -g "$RESOURCE_GROUP" -n "$AZURE_SIGNALR_SERVICE" --query hostName -o tsv)/api/health"
-```
-
-A non-200 here means the service itself is unhealthy — cross-check with `azure-monitor`'s resource-health command before assuming an application bug.
-
-## 6. Activity log — scale/restart/config-change events
-
-```bash
-az monitor activity-log list -g "$RESOURCE_GROUP" --resource-id "$SIGNALR_ID" \
-  --start-time "$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%MZ)" -o table
-```
-
-A unit-count change or restart explains a mass-disconnect event far better than any application-side hypothesis — check this first if "everyone got disconnected at the same instant."
-
-## Suggested triage workflow
-
-1. **"Real-time updates stopped for some/all users"** → step 2 (`ConnectionQuotaUtilization`) → step 6 (was there a scale/restart event) → step 5 (health check).
-2. **"Negotiate/connection refused from the browser"** → pair with `chrome-devtools-frontend` to see the actual negotiate response/status code first → step 1 (CORS config) → step 4 (HttpRequestLogs for 4xx on negotiate).
-3. **"Messages delayed or dropped"** → step 3 (MessageCount/ServerLoad) → step 1 (confirm service mode — Serverless upstream failures won't show in App Insights).
-4. **"Clients randomly disconnect"** → step 4 (ConnectivityLogs disconnect reason) is far more informative than guessing from client-side symptoms alone.
+The full command set — service config/CORS/upstream, connection count & limit metrics, message throughput, connectivity/messaging logs, health check, and activity log — plus the suggested triage workflow (which step to start with for a given symptom) live in `references/investigation-playbook.md`. Load that file once the environment and config are resolved.
 
 ## Output hygiene
 

@@ -9,23 +9,60 @@ Read-only investigation of Application Insights telemetry (requests, dependencie
 exceptions, traces, customEvents) using `az monitor app-insights query` (Azure CLI).
 No write/mutating Azure commands are ever used by this skill.
 
-## 0. Load config
+## 0. Resolve config
 
-Resource identifiers live in `~/.agents/.env`. Always source it first (don't hardcode
-names you find in this file into memory across sessions — re-read each time):
+Config differs per environment (**QA** vs **Production**) and can also differ per
+project/repo. Resolve it fresh every time — never reuse values you happened to see in
+a previous session.
 
+**Step 1 — Determine the environment.** The user's request should make clear whether
+they mean QA or Production (e.g. an explicit `--env qa`, or wording like "check QA" /
+"on prod"). If it's ambiguous, ask before proceeding — querying the wrong environment
+can produce misleading results.
+
+**Step 2 — Resolve the config file**, in this priority order:
+
+1. `<repo-root>/.claude/app-insights-kql.json` — project-specific override. Found by
+   walking up from the current working directory to the git root.
+2. `~/.claude/app-insights-kql.json` — personal/global default, used when the repo has
+   no override.
+
+Run:
 ```bash
-set -a; source ~/.agents/.env; set +a
-echo "App Insights: $AZURE_APPLICATION_INSIGHTS | RG: $RESOURCE_GROUP | Sub: $SUBSCRIPTION"
+bash scripts/resolve_config.sh --env <qa|production>
 ```
+The script checks both locations in that order and prints the resolved values for the
+requested environment as JSON. It exits non-zero if neither file has that environment
+defined.
+
+**Step 3 — If resolution fails, go to 0.1 (discovery flow).** Don't ask the user to
+type raw resource IDs before trying to find them yourself.
 
 Confirm the right subscription/login context before querying:
-
 ```bash
 az account show --query "{name:name, id:id}" -o table
-# If needed:
-az account set --subscription "$SUBSCRIPTION"
+az account set --subscription "<subscriptionId>"   # if needed
 ```
+
+### 0.1 Discovery flow (no config found for this repo/env)
+
+```bash
+az monitor app-insights component show --query "[].{name:name, rg:resourceGroup}" -o table
+```
+
+- Prefer entries whose name resembles the current repo/folder name, the requested
+  environment (qa/prod), or an already-active default resource group
+  (`az config get defaults.group`).
+- One clear match → confirm briefly with the user, then use it.
+- Several plausible matches → list up to 5–8 and ask the user to pick.
+- None found → ask the user for the App Insights name or resource group to narrow
+  the search.
+
+Once you have `appInsightsName` + `resourceGroup` (+ `subscriptionId` if the user has
+more than one subscription), **ask if they want it saved**. Default suggestion:
+`<repo-root>/.claude/app-insights-kql.json` under the resolved environment's key, so
+the next run for this repo/env skips discovery (see `assets/config.example.json` for
+the exact shape). Only write the file after they confirm.
 
 ## 1. Read-only rule
 
@@ -43,8 +80,8 @@ tell the user this skill is read-only and ask how they'd like to proceed.
 
 ```bash
 az monitor app-insights query \
-  --app "$AZURE_APPLICATION_INSIGHTS" \
-  --resource-group "$RESOURCE_GROUP" \
+  --app "<appInsightsName>" \
+  --resource-group "<resourceGroup>" \
   --analytics-query "<KQL HERE>" \
   -o table
 ```
@@ -60,135 +97,29 @@ Tips:
 
 ## 3. Investigation playbook
 
-### A. "Something broke around time X" — start broad, then narrow
+Detailed KQL patterns (failed requests, exception deep-dive, latency, Serilog traces,
+frontend telemetry, correlating with the backend App Service) are in
+`references/investigation-playbook.md`. Load that file when you actually need one of
+these patterns rather than keeping it all in context up front.
 
-1. **Failed requests overview**
-```kql
-requests
-| where timestamp between (datetime(2026-08-21T02:00:00Z) .. datetime(2026-08-21T03:00:00Z))
-| where success == false
-| summarize count() by resultCode, name
-| order by count_ desc
-```
+## 4. When to hand off to other skills/tools
 
-2. **Exceptions in that window**
-```kql
-exceptions
-| where timestamp between (datetime(2026-08-21T02:00:00Z) .. datetime(2026-08-21T03:00:00Z))
-| summarize count() by type, method, outerMessage
-| order by count_ desc
-```
+- Raw daily log files (not in App Insights) → **Azure Storage App Service logs** skill.
+- Platform-level logs (App Service platform logs, container logs) or saved Log
+  Analytics queries across multiple resources → **Log Analytics Workspace** skill
+  (same KQL, different scope/tables: `AppServiceHTTPLogs`, `AppServiceConsoleLogs`,
+  `AppServiceAppLogs`).
+- DB-side evidence (blocking, query duration, errors in SQL itself) → **Azure SQL
+  Database** skill.
+- Issue only reproducible in-browser (rendering, console errors, failed network
+  calls, CORS) → Chrome DevTools MCP/plugin if connected; don't force this into App
+  Insights KQL if the frontend isn't instrumented.
+- Resource health / alerts / activity log → **Azure Monitor** skill.
 
-3. **Pick one `operation_Id` and pull the full trace** (correlates across
-   requests/dependencies/traces/exceptions — this is the key OpenTelemetry/App
-   Insights correlation field):
-```kql
-union requests, dependencies, exceptions, traces
-| where operation_Id == "<paste operation_Id>"
-| order by timestamp asc
-| project timestamp, itemType, name, message, resultCode, duration, severityLevel, customDimensions
-```
-
-### B. Slow / latency investigation
-
-```kql
-requests
-| where timestamp > ago(2h)
-| summarize p50=percentile(duration,50), p95=percentile(duration,95), p99=percentile(duration,99), count() by name
-| order by p95 desc
-```
-
-Then drill into dependencies (Azure SQL calls, HTTP calls to other services) for the
-slow operation:
-```kql
-dependencies
-| where timestamp > ago(2h)
-| where operation_Name == "<slow operation name>"
-| summarize p50=percentile(duration,50), p95=percentile(duration,95), count() by target, type, name
-| order by p95 desc
-```
-
-### C. Serilog structured logs / custom traces (traces table)
-
-Serilog + OpenTelemetry typically lands in `traces` with `severityLevel` and structured
-properties in `customDimensions`.
-
-```kql
-traces
-| where timestamp > ago(1h)
-| where severityLevel >= 3  // 3=Error, 4=Critical (0=Verbose,1=Info,2=Warning)
-| project timestamp, message, severityLevel, customDimensions
-| order by timestamp desc
-```
-
-Search log messages for a keyword (e.g. a user id, order id, correlation id used in
-Serilog enrichers):
-```kql
-traces
-| where timestamp > ago(6h)
-| where message has "OrderId=12345" or tostring(customDimensions.OrderId) == "12345"
-| order by timestamp asc
-```
-
-### D. Exceptions deep-dive (stack trace + inner exception)
-
-```kql
-exceptions
-| where timestamp > ago(6h)
-| where type == "System.Data.SqlClient.SqlException" // adjust
-| project timestamp, outerMessage, innermostMessage, details, operation_Id
-| order by timestamp desc
-| take 20
-```
-`details` contains the parsed stack frames as a dynamic array — use `-o json` to
-inspect it fully rather than the truncated table view.
-
-### E. Frontend (Angular) telemetry, if App Insights JS SDK is wired in
-
-```kql
-pageViews
-| where timestamp > ago(2h)
-| summarize count() by name, client_Browser
-
-exceptions
-| where timestamp > ago(2h)
-| where cloud_RoleName == "<frontend role name>" or client_Type == "Browser"
-| project timestamp, outerMessage, url
-```
-If the frontend isn't emitting its own App Insights telemetry, rely on the Chrome
-DevTools MCP/plugin instead (network tab, console errors) — see note in section 5.
-
-## 4. Correlating with the backend App Service
-
-Requests' `cloud_RoleName` should match `$AZURE_APP_SERVICE_BACKEND` (or the
-`APPLICATIONINSIGHTS_ROLE_NAME` set on the App Service). Filter by it when the App
-Insights resource is shared across multiple apps:
-
-```kql
-requests
-| where cloud_RoleName == "<value of AZURE_APP_SERVICE_BACKEND>"
-| where timestamp > ago(1h)
-```
-
-## 5. When to hand off to other skills/tools
-
-- Raw daily log files (not in App Insights) → use the **Azure Storage App Service logs**
-  skill.
-- Need to correlate with platform-level logs (App Service platform logs, container
-  logs) or run saved Log Analytics queries across multiple resources → use the
-  **Log Analytics Workspace** skill (same KQL language, different scope/tables:
-  `AppServiceHTTPLogs`, `AppServiceConsoleLogs`, `AppServiceAppLogs`, etc.).
-- Need DB-side evidence (blocking, query duration, errors in SQL itself) → use the
-  **Azure SQL Database** skill.
-- Suspect the issue is only reproducible in-browser (rendering, console errors, failed
-  network calls, CORS) → use Chrome DevTools MCP/plugin if connected; don't try to
-  force this into App Insights KQL if the frontend isn't instrumented.
-- Need resource health / alerts / activity log → use the **Azure Monitor** skill.
-
-## 6. Output format for the user
+## 5. Output format for the user
 
 When reporting findings, always include:
-1. The time range queried.
+1. The environment and time range queried.
 2. The exact KQL used (so it's reproducible).
 3. A short summary of what was found (counts, top offenders, a representative
    `operation_Id` or exception message).

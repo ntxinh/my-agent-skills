@@ -1,0 +1,20 @@
+{
+  "qa": {
+    "subscriptionId": "00000000-0000-0000-0000-000000000000",
+    "resourceGroup": "rg-myapp-qa",
+    "appServiceBackendName": "app-myapp-backend-qa",
+    "appServiceFrontendName": "app-myapp-frontend-qa",
+    "sqlServerName": "sql-myapp-qa",
+    "sqlDatabaseName": "myapp-db-qa",
+    "storageAccountName": "myappstorageqa"
+  },
+  "production": {
+    "subscriptionId": "00000000-0000-0000-0000-000000000000",
+    "resourceGroup": "rg-myapp-prod",
+    "appServiceBackendName": "app-myapp-backend-prod",
+    "appServiceFrontendName": "app-myapp-frontend-prod",
+    "sqlServerName": "sql-myapp-prod",
+    "sqlDatabaseName": "myapp-db-prod",
+    "storageAccountName": "myappstorageprod"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "qa": {
+    "subscriptionId": "00000000-0000-0000-0000-000000000000",
+    "resourceGroup": "rg-myapp-qa",
+    "postgresServerName": "psql-myapp-qa",
+    "postgresDatabaseName": "myapp_qa",
+    "postgresUsername": "myapp_readonly"
+  },
+  "production": {
+    "subscriptionId": "00000000-0000-0000-0000-000000000000",
+    "resourceGroup": "rg-myapp-prod",
+    "postgresServerName": "psql-myapp-prod",
+    "postgresDatabaseName": "myapp_prod",
+    "postgresUsername": "myapp_readonly"
+  }
+}

@@ -5,154 +5,90 @@ description: Read-only Azure Database for PostgreSQL (Flexible Server) investiga
 
 # Azure Database for PostgreSQL (read-only)
 
-Investigates PostgreSQL-backed issues: connection exhaustion, slow queries, locking, replication lag, and storage/vacuum health. Sibling to `azure-sql-database` (same layer of the stack, different engine) — use this one if the product has a service on Azure Database for PostgreSQL rather than, or alongside, Azure SQL.
+Investigates PostgreSQL-backed issues: connection exhaustion, slow queries,
+locking, replication lag, and storage/vacuum health. Sibling to
+`azure-sql-database` (same layer of the stack, different engine) — use this
+one if the product has a service on Azure Database for PostgreSQL rather
+than, or alongside, Azure SQL.
 
 ## Hard rule: read-only, no exceptions
 
-**Azure CLI**: only `list`, `show`, `list-metrics`, and log/metric reads. Never `create`, `update`, `delete`, `az postgres flexible-server restart`, `az postgres flexible-server parameter set`, or scaling/failover operations.
+**Azure CLI**: only `list`, `show`, `list-metrics`, and log/metric reads.
+Never `create`, `update`, `delete`, `az postgres flexible-server restart`,
+`az postgres flexible-server parameter set`, or scaling/failover operations.
 
-**SQL**: only `SELECT` statements, including against system catalogs and stats views (`pg_stat_activity`, `pg_stat_statements`, `pg_locks`, `pg_stat_user_tables`, `pg_stat_replication`). Never `INSERT`/`UPDATE`/`DELETE`/`TRUNCATE`/any DDL (`CREATE`/`ALTER`/`DROP`), never `VACUUM`/`ANALYZE`/`REINDEX` (these mutate storage/stats even though they're "maintenance," and never `pg_terminate_backend`/`pg_cancel_backend` (kills another session — a mutating, disruptive action). If a fix requires killing a blocking session or running `VACUUM`, propose it explicitly and get confirmation — don't execute it.
+**SQL**: only `SELECT` statements, including against system catalogs and
+stats views (`pg_stat_activity`, `pg_stat_statements`, `pg_locks`,
+`pg_stat_user_tables`, `pg_stat_replication`). Never
+`INSERT`/`UPDATE`/`DELETE`/`TRUNCATE`/any DDL (`CREATE`/`ALTER`/`DROP`),
+never `VACUUM`/`ANALYZE`/`REINDEX` (these mutate storage/stats even though
+they're "maintenance"), and never `pg_terminate_backend`/`pg_cancel_backend`
+(kills another session — a mutating, disruptive action). If a fix requires
+killing a blocking session or running `VACUUM`, propose it explicitly and
+get confirmation — don't execute it.
 
-## Setup
+## Config resolution
 
-Add these to `~/.agents/.env` if not already present (ask the user for real values):
+This skill needs to know which Azure resources to look at, and — critically
+— which **environment** (`qa` or `production`) to point at. Getting the
+environment wrong can produce a misleading timeline, so:
 
-```ini
-AZURE_POSTGRESQL_SERVER=
-AZURE_POSTGRESQL_DATABASE=
-AZURE_POSTGRESQL_USER=
-AZURE_POSTGRESQL_PASSWORD=
-```
+1. **Determine the environment first.** If the user or the calling
+   instruction hasn't specified `qa` or `production` (or it's ambiguous
+   which they mean), **ask before proceeding.** Do not default to
+   production or guess.
 
-```bash
-set -a; source ~/.agents/.env; set +a
-az account set --subscription "$SUBSCRIPTION"
+2. **Resolve config for that environment:**
 
-PG_ID=$(az postgres flexible-server show -g "$RESOURCE_GROUP" -n "$AZURE_POSTGRESQL_SERVER" --query id -o tsv)
-```
+   ```bash
+   scripts/resolve_config.sh --env qa         # or: --env production
+   ```
 
-Connect (read-only role recommended at the database level, in addition to only ever issuing `SELECT`):
+   This checks, in order:
+   - `<repo-root>/.claude/azure-postgresql.json` — project-specific
+     override, found by walking up from the current directory to the git
+     root.
+   - `~/.claude/azure-postgresql.json` — personal/global default, if the
+     project file doesn't exist or doesn't define that environment.
 
-```bash
-PGPASSWORD="$AZURE_POSTGRESQL_PASSWORD" psql \
-  "host=$AZURE_POSTGRESQL_SERVER.postgres.database.azure.com port=5432 dbname=$AZURE_POSTGRESQL_DATABASE user=$AZURE_POSTGRESQL_USER sslmode=require" \
-  -c "SELECT 1;"
-```
+   On success it prints the resolved JSON object with fields
+   `subscriptionId`, `resourceGroup`, `postgresServerName` (all required —
+   the script validates this), and optionally `postgresDatabaseName` and
+   `postgresUsername` (needed only for the SQL-query workflows in
+   `references/commands.md` sections 3–6, not for the CLI-only config/metric
+   checks in sections 1–2 and 7).
 
-## 1. Server config & health — "what are we actually running"
+3. **The password is never in this file.** Ask the user to export it as an
+   environment variable (e.g. `export PGPASSWORD=...`) for the session
+   before running any `psql` command. The resolver script actively rejects
+   a config file that contains a password field, since these files are
+   meant to be safe to commit at the project level.
 
-```bash
-az postgres flexible-server show -g "$RESOURCE_GROUP" -n "$AZURE_POSTGRESQL_SERVER" \
-  --query "{sku:sku.name, tier:sku.tier, storageGb:storage.storageSizeGb, version:version, ha:highAvailability.mode, state:state}" -o json
+4. **On failure (non-zero exit), do not guess values.** Follow the discovery
+   flow in `references/discovery.md`: list candidate resources with
+   read-only commands, confirm with the user, and offer (never assume) to
+   save the non-secret parts to the project config for next time.
 
-# Key server parameters that explain a lot of incidents
-az postgres flexible-server parameter show -g "$RESOURCE_GROUP" -s "$AZURE_POSTGRESQL_SERVER" -n max_connections -o json
-az postgres flexible-server parameter show -g "$RESOURCE_GROUP" -s "$AZURE_POSTGRESQL_SERVER" -n shared_buffers -o json
-az postgres flexible-server parameter show -g "$RESOURCE_GROUP" -s "$AZURE_POSTGRESQL_SERVER" -n log_min_duration_statement -o json
-```
+See `assets/config.example.json` for the expected shape of both environment
+blocks.
 
-`max_connections` is a fixed value per SKU tier — check it before assuming "connection refused" is an app bug; a small tier can have a surprisingly low ceiling.
+## Investigation areas
 
-## 2. CPU / memory / storage / IOPS — via Metrics
+Once config is resolved and the database connection is established, full
+command examples for each area live in `references/commands.md`:
 
-```bash
-az monitor metrics list --resource "$PG_ID" \
-  --metric "cpu_percent" "memory_percent" "storage_percent" "iops" "active_connections" \
-  --interval PT5M --start-time "$(date -u -d '3 hours ago' +%Y-%m-%dT%H:%MZ)" \
-  -o table
-```
+1. **Server config & health** — SKU, storage, version, HA mode, key parameters (`max_connections`, `shared_buffers`, `log_min_duration_statement`).
+2. **Metrics** — CPU, memory, storage, IOPS, active connections.
+3. **Active sessions & blocking** — `pg_stat_activity`, blocking chains via `pg_locks`.
+4. **Slow queries** — `pg_stat_statements` (if enabled).
+5. **Table/index health** — bloat, dead tuples, autovacuum lag, missing-index signals.
+6. **Replication** — replica list, replay lag.
+7. **Logs & diagnostic settings** — where PostgreSQL logs are routed.
 
-`storage_percent` climbing toward 100% is urgent — Flexible Server can go read-only when storage fills. `active_connections` near `max_connections` (step 1) is the direct explanation for connection-refused errors.
-
-## 3. Active sessions & blocking — live, read-only
-
-```sql
--- What's running right now, and for how long
-SELECT pid, usename, application_name, state, wait_event_type, wait_event,
-       now() - query_start AS duration, query
-FROM pg_stat_activity
-WHERE state != 'idle'
-ORDER BY duration DESC;
-
--- Blocking chains: who is blocking whom
-SELECT blocked.pid AS blocked_pid, blocked.query AS blocked_query,
-       blocking.pid AS blocking_pid, blocking.query AS blocking_query
-FROM pg_locks bl
-JOIN pg_stat_activity blocked ON blocked.pid = bl.pid
-JOIN pg_locks bl2 ON bl2.locktype = bl.locktype AND bl2.database IS NOT DISTINCT FROM bl.database
-  AND bl2.relation IS NOT DISTINCT FROM bl.relation AND bl2.pid != bl.pid AND bl2.granted
-JOIN pg_stat_activity blocking ON blocking.pid = bl2.pid
-WHERE NOT bl.granted;
-```
-
-Long-running `idle in transaction` sessions are a classic cause of both blocking and autovacuum being unable to clean up dead rows — flag these specifically.
-
-## 4. Slow queries — pg_stat_statements
-
-Requires the `pg_stat_statements` extension to be enabled (check first — it's opt-in via `shared_preload_libraries`):
-
-```sql
-SELECT query, calls, total_exec_time, mean_exec_time, rows
-FROM pg_stat_statements
-ORDER BY mean_exec_time DESC
-LIMIT 20;
-```
-
-If the extension isn't enabled, say so explicitly — enabling it requires a server restart (a change, not something this skill applies) so flag it as a proposed improvement rather than assuming query-level data is available.
-
-## 5. Table/index health — bloat & autovacuum
-
-```sql
--- Dead tuple ratio per table — high values mean autovacuum is falling behind
-SELECT relname, n_live_tup, n_dead_tup,
-       round(n_dead_tup::numeric / NULLIF(n_live_tup + n_dead_tup, 0) * 100, 1) AS dead_pct,
-       last_autovacuum, last_autoanalyze
-FROM pg_stat_user_tables
-ORDER BY n_dead_tup DESC
-LIMIT 20;
-
--- Unused indexes (candidates for review, not action here) and missing-index hints via seq scans
-SELECT relname, seq_scan, seq_tup_read, idx_scan, seq_scan - idx_scan AS scan_diff
-FROM pg_stat_user_tables
-WHERE seq_scan > 0
-ORDER BY scan_diff DESC
-LIMIT 20;
-```
-
-A table with high `seq_scan` relative to `idx_scan` on a large table is a strong signal of a missing index — propose it, don't create it.
-
-## 6. Replication (if HA / read replicas configured)
-
-```bash
-az postgres flexible-server replica list -g "$RESOURCE_GROUP" -n "$AZURE_POSTGRESQL_SERVER" -o table
-```
-
-```sql
--- On the primary: replay lag per replica
-SELECT application_name, client_addr, state,
-       pg_wal_lsn_diff(sent_lsn, replay_lsn) AS replay_lag_bytes
-FROM pg_stat_replication;
-```
-
-Growing `replay_lag_bytes` explains stale-read symptoms on read-replica-routed traffic.
-
-## 7. Logs & diagnostic settings
-
-```bash
-az monitor diagnostic-settings list --resource "$PG_ID" -o table
-```
-
-If routed to the shared Log Analytics workspace, hand off to `log-analytics-workspace` with a starting query against `AzureDiagnostics` filtered to `Category == "PostgreSQLLogs"`, looking for `ERROR`, `FATAL`, or `deadlock detected` entries, and correlate timestamps with the Azure Monitor activity log for restarts/failovers/scaling events.
-
-## Suggested triage workflow
-
-1. **"Connection refused / too many connections"** → step 2 (`active_connections` vs. step 1's `max_connections`) → step 3 (any long-idle or idle-in-transaction sessions hogging slots).
-2. **"Query taking forever"** → step 3 (is it blocked, or just slow) → step 4 (pg_stat_statements, if enabled) → step 5 (missing index / bloat check).
-3. **"High CPU / storage filling up"** → step 2 (metrics) → step 5 (bloat/dead tuples driving both CPU from re-reads and storage growth) → step 1 (confirm SKU/storage tier is actually sized for current load).
-4. **"Replica returning stale data"** → step 6 (replication lag).
-
-## Output hygiene
-
-- Always state whether the server is single-instance or HA-enabled, and whether replicas exist — changes what "check replication" even means.
-- Report `pg_stat_statements` and dead-tuple figures with the *scope* (per-table/per-query), not aggregated across the whole database, so the proposed fix can be targeted.
-- Flag anything requiring `shared_preload_libraries` changes, parameter changes, or session termination as a proposed action for a human/coding agent — this skill only observes.
+`references/commands.md` also has the suggested triage workflow (mapped from
+common symptoms — "connection refused", "query taking forever", "high
+CPU/storage", "stale replica reads" — to the relevant sections above) and
+output-hygiene notes (state HA/replica topology up front, scope
+`pg_stat_statements`/dead-tuple figures per-table or per-query, flag any fix
+that needs a parameter change or session kill as a proposed action rather
+than executing it).

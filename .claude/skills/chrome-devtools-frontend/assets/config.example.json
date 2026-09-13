@@ -1,0 +1,14 @@
+{
+  "qa": {
+    "subscriptionId": "00000000-0000-0000-0000-000000000000",
+    "resourceGroup": "rg-myapp-qa",
+    "frontendAppServiceName": "myapp-qa-frontend",
+    "backendAppServiceName": "myapp-qa-backend"
+  },
+  "production": {
+    "subscriptionId": "11111111-1111-1111-1111-111111111111",
+    "resourceGroup": "rg-myapp-prod",
+    "frontendAppServiceName": "myapp-prod-frontend",
+    "backendAppServiceName": "myapp-prod-backend"
+  }
+}

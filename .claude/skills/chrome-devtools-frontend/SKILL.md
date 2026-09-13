@@ -27,59 +27,62 @@ Allowed: navigating to pages, opening the Console/Network/Performance panels, re
 
 Confirm the Chrome DevTools MCP tool is connected before starting. If it isn't, say so and offer to fall back to asking the user to paste console/network output manually.
 
-Know the two frontend/backend origins from the env file so you can distinguish first-party calls from third-party noise:
+### Configuration
+
+Connection settings (the two App Service names) live in a small JSON config, resolved per environment — not in a `.env` file.
+
+**Step 1 — determine the environment.** Exactly two environments are supported: `qa` and `production`. If the user's instruction names one, use it. If it's unspecified or ambiguous, **ask before proceeding** — reading the wrong environment's App Service names means you'll compare origins against the wrong hosts and any CORS/trace-ID handoff will be wrong.
+
+**Step 2 — resolve config:**
 
 ```bash
-set -a; source ~/.agents/.env; set +a
-az webapp show -g "$RESOURCE_GROUP" -n "$AZURE_APP_SERVICE_FRONTEND" --query defaultHostName -o tsv
-az webapp show -g "$RESOURCE_GROUP" -n "$AZURE_APP_SERVICE_BACKEND" --query defaultHostName -o tsv
+scripts/resolve_config.sh --env qa        # or: --env production
 ```
 
-## 1. Reproduce and capture console errors
+The script checks, in order:
+1. **Project override** — walks up from the current directory to the nearest git root, then reads `<repo-root>/.claude/chrome-devtools-frontend.json`.
+2. **Personal/global default** — `~/.claude/chrome-devtools-frontend.json`.
+3. If neither file defines the requested environment, it exits non-zero (exit code `1`). **Fall through to the discovery flow below — never fabricate values.**
 
-1. Navigate to the affected page/route.
-2. Open the Console panel; perform the read-only interaction that triggers the bug (page load, non-destructive click, navigation).
-3. Capture: error message, stack trace, source file/line, and whether it's an uncaught exception, an Angular `ExpressionChangedAfterItHasBeenCheckedError`, a `ChangeDetectionError`, a zone.js error, or a plain network failure surfacing as a console error.
-4. Note the exact timestamp (browser local time) — you'll need to convert to UTC when cross-referencing backend logs.
+On success, it prints one JSON object with the resolved fields on stdout (exit `0`), after validating that all required fields are present.
 
-## 2. Inspect the Network tab for the failing request
+**Step 3 — discovery flow (only if resolution fails):**
+1. Run `az webapp list -g <resource-group>` (or `az group list` first if the resource group is also unknown) to find likely candidate frontend/backend App Services for the requested environment.
+2. Confirm the match with the user, or let them pick from a short list if there's more than one candidate.
+3. Ask whether to save the resolved values to the **project-level** config (`<repo-root>/.claude/chrome-devtools-frontend.json`) for next time.
+4. **Never write the config file without the user's explicit confirmation.**
 
-For the specific request that's failing or slow:
+### Config fields
 
-- **Status code** and whether it's client (4xx) or server (5xx).
-- **Request headers** — especially any distributed tracing headers: `traceparent` (W3C Trace Context, standard with OpenTelemetry), `request-id` (older ASP.NET Core convention), or a custom correlation header if the app uses one. **This is the key artifact to extract** — it's the join key into Application Insights / Log Analytics.
-- **Request payload** — confirm the Angular app is actually sending what's expected (correct shape, auth header present, correct API base URL for the environment).
-- **Response body** — ASP.NET Core problem-details responses often include a `traceId` field directly; grab that too, it's usually the same as the `traceparent` trace ID.
-- **Timing breakdown** — DNS/connect/TTFB/download — TTFB dominating means it's a backend/infra problem (hand off to `azure-monitor` or `app-insights-kql`), download dominating means payload size or client network.
+| Field | Required | Description |
+|---|---|---|
+| `subscriptionId` | Yes | Azure subscription ID or name containing the App Services, used for `az account set --subscription`. Included so origin lookups always target the intended subscription rather than whatever the CLI happens to have active. |
+| `resourceGroup` | Yes | Resource group containing both App Services |
+| `frontendAppServiceName` | Yes | The Angular app's App Service name, used with `az webapp show -n` |
+| `backendAppServiceName` | Yes | The ASP.NET Core API's App Service name, used with `az webapp show -n` |
 
-Extract and hand off, e.g.:
-> Frontend sent `GET /api/orders/123` at 2026-08-21T09:14:02Z, got a 500, response body `traceId: 00-4bf9...-01`. Backend App Service is `$AZURE_APP_SERVICE_BACKEND`. → passing this trace ID to `app-insights-kql` to pull the matching exception.
+See `assets/config.example.json` for a filled-in example covering both environments.
 
-## 3. CORS / mixed-origin issues
+### Using the resolved config
 
-Angular calling the backend App Service is a classic CORS surface. Check for:
-- Console error text (`has been blocked by CORS policy...`) — note whether it's missing `Access-Control-Allow-Origin`, a preflight (`OPTIONS`) failure, or a credentials mismatch.
-- In the Network tab, find the `OPTIONS` preflight request (if any) and check its response headers vs the actual request's `Origin` header.
-- This is a config issue on the backend (CORS policy in `Program.cs`/`Startup.cs`), not fixable from the browser — report exactly which origin/header/method was rejected so it can be fixed server-side.
+```bash
+CONFIG=$(scripts/resolve_config.sh --env qa) || {
+  # resolution failed — run the discovery flow instead of guessing
+  exit 1
+}
 
-## 4. Angular-specific state inspection (read-only)
+SUBSCRIPTION_ID=$(jq -r '.subscriptionId'            <<<"$CONFIG")
+RESOURCE_GROUP=$(jq -r '.resourceGroup'              <<<"$CONFIG")
+FRONTEND_APP_SERVICE_NAME=$(jq -r '.frontendAppServiceName' <<<"$CONFIG")
+BACKEND_APP_SERVICE_NAME=$(jq -r '.backendAppServiceName'   <<<"$CONFIG")
 
-With Angular DevTools or plain console evaluation:
-- Inspect component inputs/outputs and current change-detection state for a component that isn't updating.
-- Check `NgRx`/service-level state (if used) via console (`ng.getComponent($0)` style APIs are read-only introspection, safe to use).
-- Confirm environment config actually loaded (`environment.apiUrl` etc.) to rule out a build/deploy pointing at the wrong backend.
+az account set --subscription "$SUBSCRIPTION_ID"
+FRONTEND_HOSTNAME=$(az webapp show -g "$RESOURCE_GROUP" -n "$FRONTEND_APP_SERVICE_NAME" --query defaultHostName -o tsv)
+BACKEND_HOSTNAME=$(az webapp show -g "$RESOURCE_GROUP" -n "$BACKEND_APP_SERVICE_NAME" --query defaultHostName -o tsv)
+```
 
-## 5. Performance / slow page
+With the two hostnames known, you can distinguish first-party calls from third-party noise in the Network tab.
 
-Use the Performance panel or Network waterfall for:
-- Large bundle downloads (check for missing lazy-loading / large vendor chunks).
-- Waterfall showing sequential requests that could be parallel.
-- Long tasks blocking the main thread (zone.js change detection storms are a common Angular culprit).
+## Investigation playbook
 
-## Handoff checklist
-
-When escalating to a backend-side skill, always pass along:
-1. **UTC timestamp** of the failing request (convert from browser local time).
-2. **Trace ID / request ID** extracted from headers or response body, if present.
-3. **Exact URL, method, and status code**.
-4. **Which App Service** (`$AZURE_APP_SERVICE_BACKEND` vs `$AZURE_APP_SERVICE_FRONTEND`) is involved — a frontend hosting issue (Angular files not served, wrong SPA fallback routing) is a different problem from a backend API failure, both live in App Service but need different follow-up skills (`azure-monitor` activity log for the frontend App Service vs `app-insights-kql` for the backend API).
+The step-by-step procedures — capturing console errors, inspecting the Network tab for a failing request, diagnosing CORS issues, Angular-specific state inspection, and performance/waterfall analysis — plus the handoff checklist for escalating to a backend-side skill, live in `references/investigation-playbook.md`. Load that file once the Chrome DevTools MCP tool is connected and (if needed) config is resolved.

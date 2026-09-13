@@ -1,0 +1,16 @@
+{
+  "qa": {
+    "subscriptionId": "00000000-0000-0000-0000-000000000000",
+    "resourceGroup": "rg-myapp-qa",
+    "storageAccountName": "myappstorageqa",
+    "containerName": "app-logs",
+    "directoryStructurePattern": "YYYY/MM/DD/api-log.txt"
+  },
+  "production": {
+    "subscriptionId": "00000000-0000-0000-0000-000000000000",
+    "resourceGroup": "rg-myapp-prod",
+    "storageAccountName": "myappstorageprod",
+    "containerName": "app-logs",
+    "directoryStructurePattern": "YYYY/MM/DD/api-log.txt"
+  }
+}
